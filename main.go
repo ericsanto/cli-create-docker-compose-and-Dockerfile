@@ -16,6 +16,7 @@ var (
 	nodeVersion string
 	outputDir   string
 	ipServer    string
+	framework   string
 )
 
 var rootCmd = &cobra.Command{Use: "tatu"}
@@ -38,49 +39,72 @@ func InitFunc() {
 	cmd.Flags().StringVarP(&nodeVersion, "nodeVersion", "v", "20", "Versão do NodeJs")
 	cmd.Flags().StringVarP(&outputDir, "output", "o", ".", "output dos arquivos Dockerfile e docker-compose.yml")
 	cmd.Flags().StringVarP(&ipServer, "ipServer", "i", "127.0.0.1", "Define o endereço IP no qual a exposição deve ser executada dentro do contêiner")
+	cmd.Flags().StringVarP(&framework, "framework", "f", "gin-gonic", "Framework para gerar o Dockerfile")
 
 }
 
 func generateDockerfile() {
-	dockerfile := fmt.Sprintf(`
-# pull base image
-FROM node:23-alpine3.19
 
-# set our node environment, either development or production
-ARG NODE_ENV=production
-ENV NODE_ENV $NODE_ENV
+	switch framework {
 
-# default to port 19006 for node, and 19001 and 19002 (tests) for debug
-ARG PORT=19006
-ENV PORT $PORT
-EXPOSE 19006 19001 19002
-ENV REACT_NATIVE_PACKAGER_HOSTNAME=%s
+	case "gin-gonic":
+		dockerfileContent := fmt.Sprintf(`FROM golang:latest AS builder 
 
-# install global packages
-ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
-ENV PATH /home/node/.npm-global/bin:$PATH
-RUN npm i --unsafe-perm -g npm@latest expo-cli@latest
-RUN apt-get update && apt-get install -y qemu-user-static
-RUN yarn add @expo/ngrok
+		WORKDIR /app 
+		COPY go.mod ./ 
+		RUN go mod download 
 
-# install dependencies
-RUN mkdir /opt/my-app && chown root:root /opt/my-app
-WORKDIR /opt/my-app
-COPY package.json package-lock.json ./
-RUN yarn install
+		COPY *.go ./ 
+		RUN go build -o main main.go 
 
-# copy in our source code last
-COPY . /opt/my-app/
+		FROM alpine:latest AS runtime 
 
-CMD ["npx","expo", "start", "--tunel"]`, ipServer)
+		WORKDIR /app 
+		COPY --from=builder /app/main . 
+		EXPOSE 8080 
 
-	dockerfilePath := outputDir + "/Dockerfile"
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
-		fmt.Println("Não foi possível criar o Dockerfile no diretório mencionado:", err)
-		return
+		CMD ["chmod", "+x", "main"] 
+		CMD ["./main"]`)
+
+		WriteDockerfile(dockerfileContent)
+
+	case "node":
+		dockerfileContent := fmt.Sprintf(`
+		
+		FROM node:17.9.0-alpine3.15
+
+		WORKDIR /usr/src/app
+
+		COPY package*.json ./
+
+		RUN npm install --only=production
+
+		COPY --from=builder /usr/src/app/dist ./
+
+		EXPOSE 3000
+
+		ENTRYPOINT ["node","./app.js"]`)
+
+		WriteDockerfile(dockerfileContent)
+
+	case "django":
+		dockerfileContent := fmt.Sprintf(`
+		FROM python:3.8
+
+		WORKDIR /app
+
+		COPY requirements.txt /app
+		RUN pip install -r requirements.txt
+		
+		COPY . /app
+		RUN python manage.py collectstatic --no-input
+
+		EXPOSE 8000
+		CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]`)
+
+		WriteDockerfile(dockerfileContent)
 	}
 
-	fmt.Println("Dockerfile criado com sucesso!")
 }
 
 func generateDockerCompose() {
@@ -133,4 +157,17 @@ func ExecuteCommand() {
 func main() {
 
 	ExecuteCommand()
+}
+
+func WriteDockerfile(dockerfile string) {
+
+	dockerfilePath := outputDir + "/Dockerfile"
+
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
+		fmt.Println("Não foi possível criar o Dockerfile no diretório especificado")
+		return
+	}
+
+	fmt.Println("Diretório criado com sucesso!")
+
 }
